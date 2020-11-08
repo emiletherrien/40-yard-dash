@@ -1,0 +1,275 @@
+---
+title: "How Diverse Body Shapes in American Football Athletes Address the NFL's 40 Yard Dash"
+date: "11/08/2020"
+author: "Emile Therrien"
+header-includes:
+    - \usepackage{setspace}\doublespacing
+output: pdf_document
+---
+
+```{r data-import, message=FALSE, warning=FALSE, echo=FALSE}
+images = readxl::read_xlsx("Ind Project/Data/image_data.xlsx")
+combine = readxl::read_xlsx("Ind Project/Data/combine_data.xlsx")
+heights = readxl::read_xlsx("Ind Project/Data/heights.xlsx")
+```
+
+```{r workspace,warning=FALSE, message=FALSE, echo=FALSE}
+library(tidyverse)
+library(broom)
+```
+
+## Introduction
+
+Does body proporitons determine position on the field or is it BMI?
+* use leg length and BMI: is there is a suggested determinant for how fast the athlete runs the 40?
+** Does BMI and/or leg length determine how fast the 40 or first ten yard split is ran?
+  *** Use ovr forty time as a metric the NFL uses to measure athlete speed
+  *** Use ten split time to determine the explosiveness of the athlete
+
+## Data Plots
+
+```{r combine-analysis,warning=FALSE, message=FALSE, echo=FALSE}
+
+#got heights from one source
+heights1 = heights %>%
+  separate("Name", sep=" ", into  = c("First", "Last")) %>% 
+  select(Last, Height) %>% 
+  arrange(desc(Last))
+
+#data frame for event outcomes
+combine1 = combine %>% 
+  separate("player", sep=", ", into  = c("Last", "First")) %>% 
+  arrange(desc(Last))
+
+#joined data frame of proper heights and times
+combine2 = left_join(combine1, heights1, by = "Last") %>%
+  mutate(height = !is.na(Height)) %>% 
+  filter(height == TRUE) %>% 
+  mutate(
+    bmi = (WGT*0.453592)/((Height*0.0254)^2),
+    fortyTime = as.numeric(fortyTimeOvr)
+  ) %>% 
+  select(Last, First, POS, bmi, fortyTime, tenTimeOvr, 
+         Height, legHgtRatio) %>% 
+  unite("name", Last, First, sep=", ") %>% #unite last, first name
+  distinct(name, .keep_all = TRUE) %>% #rid of duplicate rows
+  mutate(
+    genPos = case_when(
+      POS == "DE" | POS == "NT" | POS == "DT" ~ "DL",
+      POS == "OT" | POS == "OC" | POS == "OG" ~ "OL",
+      POS == "QB" ~ "QB",
+      POS == "WR" ~ "WR",
+      POS == "RB" ~ "RB",
+      POS == "ILB" | POS == "OLB" | POS == "LB/SS" ~ "LB",
+      POS == "CB" ~ "CB",
+      POS == "FS" | POS == "SS" ~ "S",
+      POS == "TE" ~ "TE"
+    ) #gave general positions (i.e. LB instead of ILB)
+  )
+
+combine2 = combine2 %>% 
+  mutate(
+    bmi_cutoff = case_when(
+      bmi >= 31 ~ ">= 31",
+      bmi < 31 ~ "< 31"
+    )
+  )
+
+glimpse(combine2)
+  
+#body shape v forty time
+ggplot(data = combine2, aes(x = bmi, y = fortyTime, col = genPos)) +
+  geom_point() +
+  facet_wrap(. ~ genPos) +
+  labs(x = "BMI (kg/m^2)", y = "Forty Yard Dash Time (s)") +
+  theme(legend.position = "none")
+
+
+ggplot(data = combine2, aes(x = reorder(genPos, tenTimeOvr, na.rm = TRUE),
+                            y = tenTimeOvr,color = genPos))+
+  geom_boxplot() +
+  labs(x = "Generalized positon",
+       y = "Ten yard split time (s)")+
+  theme(legend.position = "none")
+
+ggplot(data = combine2, aes(x = legHgtRatio, y = tenTimeOvr, color = genPos,
+                            size = 1.5)) +
+  geom_point() +
+  guides(size = FALSE) +
+  labs(x = "Leg to torso ratio", y = "Ten yard time split (s)")+
+  scale_colour_discrete("Position")
+
+ggplot(data = combine2, aes(x = bmi, y = tenTimeOvr, color = bmi_cutoff,
+                            size = 0.25, alpha = 0.25)) +
+  geom_point() +
+  geom_smooth(method = lm, se = F, size=1) +
+  guides(size = FALSE, alpha = FALSE) +
+  labs(x = "BMI (kg/m^2)", y = "Ten yard time split (s)")+
+  scale_colour_discrete("BMI")
+
+```
+
+## Statistical Analyses
+
+### BMI v Forty Time
+
+$\alpha$ = 0.05
+
+$H_0$: BMI and forty time do not have a strong ($\le$ 0.5), postive correlation.
+
+$H_A$: BMI and forty time do have a strong (>0.5), postive correlation.
+
+```{r analysis-BMI-fortyTime,warning=FALSE, message=FALSE, echo=FALSE}
+#obs correlation between BMI and forty time
+combine_analysis = combine2 %>% 
+  summarize(
+    sdBmi = sd(bmi),
+    sdTime = sd(fortyTime, na.rm=TRUE),
+    covar = cov(bmi, fortyTime, use ="complete.obs")
+  ) %>% 
+  mutate(
+    sample_correlation = (covar/(sdBmi*sdTime))
+  ) %>% 
+  select(sample_correlation)
+
+#simulation based approach for correlation
+set.seed(1)
+boot_dist = numeric(1000)
+
+for(i in 1:1000){ 
+  indices <- sample(1:nrow(combine2), replace = T) 
+  boot_bmi <- combine2 %>% 
+    slice(indices) %>%                  
+    summarize(boot_sd_bmi = sd(bmi)) %>%  
+    pull()          
+  boot_time <- combine2 %>% 
+    slice(indices) %>%                  
+    summarize(boot_sd_time = sd(fortyTime, na.rm=TRUE)) %>%  
+    pull()         
+  boot_covar <- combine2 %>% 
+    slice(indices) %>% 
+    summarize(boot_covar = cov(bmi, fortyTime, use = "complete.obs")) %>% 
+    pull()
+  boot_dist[i] <- (boot_covar/(boot_bmi*boot_time))
+}
+boot_means <- tibble(boot_dist)
+
+boot_means1 = boot_means %>% 
+  summarize(lower = quantile(boot_dist, 0.025),
+            upper = quantile(boot_dist, 0.975))
+boot_means1
+
+ggplot(data = boot_means, aes(x = boot_dist)) +
+  geom_histogram(color = "black",
+                 fill = "darkgrey") + 
+  labs(title = "Bootstrap distribution of correlation",
+       subtitle = "between BMI and Forty Time with 95% confidence interval",
+       x = "Correlation", y = "Count") +
+  geom_vline(xintercept = c(boot_means1$lower, boot_means1$upper), 
+             color = "red", lwd = 1.5)
+
+```
+
+Based on an $\alpha$ level of 0.05, we are 95% confident that the true population coefficient for BMI and forty times is between (0.7485, 0.8436). There is enough evidence to reject the null hypothesis that there is not a strong, positive correlation between BMI and forty time.
+
+### Position v Ten Time
+
+What is the relationship between positions and the frst ten yard splits?
+All conditions met, can use linear inference to determine relationship.
+
+```{r analysis-genPos-fortyTime,warning=FALSE, message=FALSE, echo=FALSE}
+combine_lm <- lm(tenTimeOvr ~ genPos, data = combine2)
+tidy(combine_lm)
+
+combine_aug = augment(combine_lm)
+
+#independence
+ggplot(data = combine_aug, 
+       aes(x = 1:238, 
+           y = .resid)) + 
+  geom_point() + 
+  labs(x = "Index", y = "Residual")
+
+#equal variance and linearity
+ggplot(combine_aug, mapping = aes(x = .fitted, y = .resid)) +
+  geom_point() + 
+  geom_hline(yintercept = 0, lwd = 2, col = "red", lty = 2) +
+  labs(x = "Predicted Price", y = "Residuals")
+
+#normality
+ggplot(combine_aug, mapping = aes(x = .resid)) +
+  geom_histogram(bins = 15) + 
+  labs(x = "Residuals")
+ggplot(combine_aug, mapping = aes(sample = .resid)) +
+  stat_qq() + 
+  stat_qq_line()
+
+```
+
+$\hat{Split}$ = 1.533 (CB) + 0.206 (DL)	+ 0.040 (LB) + 0.294 (OL) + 0.088 (QB) + 
+  0.012 (RB) + 0.028 (S)	+ 0.101 (TE) - 0.003 (WR)
+
+### Leg:Torso and Ten Time Split
+
+```{r correlation-legTorso-tenTime}
+#obs correlation between BMI and forty time
+dimension_analysis = combine2 %>% 
+  summarize(
+    sdTenTime = sd(tenTimeOvr, na.rm=TRUE),
+    sdRatio = sd(legHgtRatio, na.rm=TRUE),
+    covar = cov(tenTimeOvr, legHgtRatio, use ="complete.obs")
+  ) %>% 
+  mutate(
+    sample_correlation = (covar/(sdTenTime*sdRatio))
+  ) %>% 
+  select(sample_correlation)
+
+#simulation based approach for correlation
+set.seed(1)
+boot_dist2 = numeric(1000)
+
+for(i in 1:1000){ 
+  indices <- sample(1:nrow(combine2), replace = T) 
+  boot_ten_time <- combine2 %>% 
+    slice(indices) %>%                  
+    summarize(boot_sd_tenTime = sd(tenTimeOvr), na.rm=TRUE) %>%  
+    pull()          
+  boot_ratio <- combine2 %>% 
+    slice(indices) %>%                  
+    summarize(boot_sd_ratio = sd(legHgtRatio, na.rm=TRUE)) %>%  
+    pull()         
+  boot_covar_ratio <- combine2 %>% 
+    slice(indices) %>% 
+    summarize(boot_covar = cov(tenTimeOvr, legHgtRatio,
+                               use = "complete.obs")) %>% 
+    pull()
+  boot_dist2[i] <- (boot_covar_ratio/(boot_ratio*boot_ten_time))
+}
+boot_means2 <- tibble(boot_dist2)
+
+boot_means3 = boot_means2 %>% 
+  summarize(lower = quantile(boot_dist2, 0.025),
+            upper = quantile(boot_dist2, 0.975))
+boot_means3
+
+ggplot(data = boot_means2, aes(x = boot_dist2)) +
+  geom_histogram(color = "black",
+                 fill = "darkgrey") + 
+  labs(title = "Bootstrap distribution of correlation",
+       subtitle = "95% confidence interval in red",
+       x = "Correlation", y = "Count") +
+  geom_vline(xintercept = c(boot_means3$lower, boot_means3$upper), 
+             color = "red", lwd = 1.5)
+```
+
+Based on an $\alpha$ level of 0.05, we are 95% confident that the true population coefficient for leg:torso and ten time splits is between (-0.05468, 0.0006826435).
+
+Can't infer from lm for tentime and leg:torso or fortyTime and leg:torso
+Not normally distributed
+
+Conclusion: evidence fails to reject the null that there is no correlation between leg:torso and ten time splits
+
+
+
+
+
